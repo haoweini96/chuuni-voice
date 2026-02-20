@@ -12,6 +12,7 @@ license = { text = "MIT" }
 keywords = ["anime", "voice", "claude-code", "developer-tools", "tts", "rvc", "hooks"]
 dependencies = [
     "click>=8.0",
+    "filelock>=3.0",
     "requests>=2.28",
     "tomli>=2.0; python_version < '3.11'",
     "tomli-w>=1.0",

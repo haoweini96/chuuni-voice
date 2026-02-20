@@ -6,12 +6,15 @@ Design goals:
   returns immediately.
 - Cooldown: each event has an independent per-event cooldown (default 3 s).
   A second trigger within the window is silently dropped.
+  State is persisted to ~/.config/chuuni/cooldown.json and protected by a
+  file lock so cooldown works correctly across concurrent chuuni processes.
 - Serial queue: play_event() feeds a single background worker so sounds from
   different events are played one after another without overlap.  The queue
   holds at most 3 pending items; the oldest is dropped when it overflows.
 - Graceful degrade: no audio file → debug log.  No player binary → debug log.
 """
 
+import json
 import logging
 import platform
 import queue
@@ -21,6 +24,8 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+
+from filelock import FileLock
 
 from chuuni_voice.events import ChuuniEvent
 
@@ -50,11 +55,49 @@ _LINUX_PLAYERS: list[tuple[str, object]] = [
 
 
 # ---------------------------------------------------------------------------
-# Cooldown state
+# Cross-process cooldown state (file-backed)
 # ---------------------------------------------------------------------------
 
-_cooldown_lock = threading.Lock()
-_last_played: dict[str, float] = {}  # event_value → monotonic timestamp
+COOLDOWN_DIR = Path.home() / ".config" / "chuuni"
+COOLDOWN_FILE = COOLDOWN_DIR / "cooldown.json"
+COOLDOWN_LOCK_FILE = COOLDOWN_DIR / "cooldown.lock"
+
+
+def _check_and_claim_cooldown(event_value: str, cooldown: float) -> bool:
+    """Return True (and record the play time) if the event may proceed.
+
+    Acquires a file lock before reading/writing so this is safe across
+    concurrent ``chuuni play`` processes.  Falls open (returns True) if the
+    lock cannot be acquired within 1 s.
+    """
+    COOLDOWN_DIR.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(COOLDOWN_LOCK_FILE), timeout=1)
+    try:
+        with lock:
+            data: dict[str, float] = {}
+            if COOLDOWN_FILE.exists():
+                try:
+                    data = json.loads(COOLDOWN_FILE.read_text())
+                except (json.JSONDecodeError, OSError):
+                    data = {}
+
+            now = time.time()
+            last = data.get(event_value, 0.0)
+            if now - last < cooldown:
+                log.debug(
+                    "play_event: cooldown active for %s (%.1fs remaining), skipping",
+                    event_value,
+                    cooldown - (now - last),
+                )
+                return False
+
+            data[event_value] = now
+            COOLDOWN_FILE.write_text(json.dumps(data))
+            return True
+    except Exception as exc:
+        log.debug("_check_and_claim_cooldown: lock error: %s — proceeding anyway", exc)
+        return True
+
 
 # ---------------------------------------------------------------------------
 # Playback queue
@@ -125,7 +168,8 @@ def play_event(
 
     Cooldown check (per-event, default 3 s from config):
       If the same event was played within the cooldown window, the call is
-      silently dropped.
+      silently dropped.  Cooldown state is shared across processes via a
+      file lock at ~/.config/chuuni/cooldown.json.
 
     Filename matching rules (case-insensitive stem):
       - Exact:    ``<event_value>.<ext>``          e.g. ``coding.mp3``
@@ -141,17 +185,8 @@ def play_event(
         cfg = load_config()
         cooldown = float(cfg.get("cooldown_seconds", 3.0))
 
-        now = time.monotonic()
-        with _cooldown_lock:
-            last = _last_played.get(event.value, 0.0)
-            if now - last < cooldown:
-                log.debug(
-                    "play_event: cooldown active for %s (%.1fs remaining), skipping",
-                    event.value,
-                    cooldown - (now - last),
-                )
-                return
-            _last_played[event.value] = now
+        if not _check_and_claim_cooldown(event.value, cooldown):
+            return
 
         if character_dir is None:
             character_dir = str(get_character_dir(cfg))

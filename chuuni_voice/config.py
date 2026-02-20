@@ -23,6 +23,43 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "cooldown_seconds": 3.0,
 }
 
+# Default per-event session play limits (0 = unlimited).
+DEFAULT_SESSION_LIMITS: dict[str, int] = {
+    "coding": 3,
+    "bash_run": 3,
+    "thinking": 1,        # fires once at message-send via Notification hook
+    "permission_prompt": 2,
+    "task_start": 5,
+    "task_done": 1,       # fires once at conversation end via Stop hook
+    "test_pass": 5,
+    "test_fail": 5,
+    "error": 5,
+}
+
+
+def get_repeat_probability(cfg: dict[str, Any]) -> float:
+    """Return the repeat-play probability from the ``[playback]`` table.
+
+    First play of an event is always 100%.  Subsequent plays use this value.
+    Range [0.0, 1.0]:  0.0 = always skip repeats,  1.0 = always play repeats.
+    """
+    return float(cfg.get("playback", {}).get("repeat_probability", 0.5))
+
+
+def get_session_limits(cfg: dict[str, Any]) -> dict[str, int]:
+    """Return per-event session play limits, merging config with defaults.
+
+    Reads the ``[session_limits]`` table from *cfg*.  Keys present in config
+    override the defaults; unrecognised keys are passed through as-is so
+    custom character events can also be limited.
+    """
+    on_disk = cfg.get("session_limits", {})
+    merged = dict(DEFAULT_SESSION_LIMITS)
+    merged.update(
+        {k: int(v) for k, v in on_disk.items() if isinstance(v, (int, float))}
+    )
+    return merged
+
 
 def load_config() -> dict[str, Any]:
     """Load config from disk, merging missing keys with defaults.

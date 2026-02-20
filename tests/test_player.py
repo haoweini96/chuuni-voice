@@ -1,5 +1,6 @@
 """Tests for chuuni_voice.player."""
 
+import json
 import queue
 import threading
 import time
@@ -12,6 +13,7 @@ import chuuni_voice.player as player_mod
 from chuuni_voice.events import ChuuniEvent
 from chuuni_voice.player import (
     _build_command,
+    _check_and_claim_cooldown,
     _enqueue_task,
     _find_candidates,
     _linux_command,
@@ -35,16 +37,17 @@ def _make_audio(directory: Path, name: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Shared fixture: reset module-level state between every test
+# Shared fixture: redirect cooldown file to a temp dir for every test
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
-def reset_player_state():
-    """Clear cooldown timestamps before (and after) each test."""
-    player_mod._last_played.clear()
+def reset_player_state(tmp_path, monkeypatch):
+    """Redirect cooldown file to a temp dir so tests don't touch real state."""
+    monkeypatch.setattr(player_mod, "COOLDOWN_DIR", tmp_path)
+    monkeypatch.setattr(player_mod, "COOLDOWN_FILE", tmp_path / "cooldown.json")
+    monkeypatch.setattr(player_mod, "COOLDOWN_LOCK_FILE", tmp_path / "cooldown.lock")
     yield
-    player_mod._last_played.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +192,8 @@ class TestPlayEvent:
         chosen_paths: set[str] = set()
         # Run enough iterations to hit all three with overwhelming probability
         for _ in range(30):
-            player_mod._last_played.clear()  # reset cooldown each iteration
+            # Reset cooldown between iterations by deleting the file
+            player_mod.COOLDOWN_FILE.unlink(missing_ok=True)
             with patch("chuuni_voice.player._enqueue_task") as mock_enqueue:
                 play_event(ChuuniEvent.TASK_DONE, str(tmp_path))
             chosen_paths.add(mock_enqueue.call_args[0][0])
@@ -250,7 +254,7 @@ class TestPlayEvent:
 
 
 # ---------------------------------------------------------------------------
-# Cooldown
+# Cooldown — in-process behaviour (backed by file)
 # ---------------------------------------------------------------------------
 
 
@@ -281,13 +285,68 @@ class TestCooldown:
         _make_audio(tmp_path, "coding.mp3")
 
         with patch("chuuni_voice.player._enqueue_task") as mock_enqueue:
-            with patch("time.monotonic", return_value=1000.0):
+            with patch("chuuni_voice.player.time.time", return_value=1000.0):
                 play_event(ChuuniEvent.CODING, str(tmp_path))
             # 4 s later → past the 3 s default cooldown
-            with patch("time.monotonic", return_value=1004.0):
+            with patch("chuuni_voice.player.time.time", return_value=1004.0):
                 play_event(ChuuniEvent.CODING, str(tmp_path))
 
         assert mock_enqueue.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Cross-process cooldown — _check_and_claim_cooldown unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestCrossProcessCooldown:
+    """Tests for the file-backed cooldown mechanism."""
+
+    def test_first_call_returns_true(self):
+        """No prior state → first claim must succeed."""
+        assert _check_and_claim_cooldown("task_done", 3.0) is True
+
+    def test_second_call_within_window_returns_false(self):
+        """Immediate repeat must be rejected."""
+        _check_and_claim_cooldown("task_done", 3.0)
+        assert _check_and_claim_cooldown("task_done", 3.0) is False
+
+    def test_state_written_to_file(self):
+        """After a successful claim the cooldown file must contain the event."""
+        _check_and_claim_cooldown("coding", 3.0)
+        data = json.loads(player_mod.COOLDOWN_FILE.read_text())
+        assert "coding" in data
+        assert isinstance(data["coding"], float)
+
+    def test_different_events_independent(self):
+        """Claiming one event must not block a different event."""
+        _check_and_claim_cooldown("coding", 3.0)
+        assert _check_and_claim_cooldown("error", 3.0) is True
+
+    def test_expired_cooldown_allows_replay(self):
+        """Once the window has passed, the same event may fire again."""
+        with patch("chuuni_voice.player.time.time", return_value=1000.0):
+            _check_and_claim_cooldown("coding", 3.0)
+        with patch("chuuni_voice.player.time.time", return_value=1004.0):
+            assert _check_and_claim_cooldown("coding", 3.0) is True
+
+    def test_simulates_second_process_sees_state(self, tmp_path):
+        """Simulate a second process: write state manually, then check."""
+        cooldown_file = player_mod.COOLDOWN_FILE
+        # "Process A" writes a fresh timestamp
+        cooldown_file.write_text(json.dumps({"task_done": time.time()}))
+        # "Process B" calls _check_and_claim_cooldown and must be blocked
+        assert _check_and_claim_cooldown("task_done", 3.0) is False
+
+    def test_corrupted_file_is_treated_as_empty(self):
+        """A corrupt JSON file must not raise — treat as no prior state."""
+        player_mod.COOLDOWN_FILE.write_text("NOT JSON {{{")
+        assert _check_and_claim_cooldown("task_done", 3.0) is True
+
+    def test_missing_file_is_treated_as_empty(self):
+        """No cooldown file present → first call must succeed."""
+        assert not player_mod.COOLDOWN_FILE.exists()
+        assert _check_and_claim_cooldown("task_done", 3.0) is True
 
 
 # ---------------------------------------------------------------------------

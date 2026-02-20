@@ -2,17 +2,21 @@
 
 Hook → ChuuniEvent mapping
 ──────────────────────────────────────────────────────────────────────────────
+UserPromptSubmit + (any)                 → THINKING   (fires the instant the user sends a message)
+SessionStart     + (any)                 → TASK_START (fires when a session begins or resumes)
+
 PreToolUse  + Write | Edit | MultiEdit   → CODING
 PreToolUse  + Bash                       → BASH_RUN
-PreToolUse  + Task                       → TASK_START
-PreToolUse  + (any other)                → THINKING   ← catch-all
 
-PostToolUse + Bash                       → TEST_PASS / TEST_FAIL
-                                           (determined at runtime via stdin)
-PostToolUse + Write | Edit | MultiEdit   → TASK_DONE
+PostToolUse + Bash                       → ERROR      (exit≠0, crash keywords in output)
+                                         → TEST_FAIL  (exit≠0, no crash keywords)
+                                         → TEST_PASS  (exit=0)
+                                           Crash keywords: Traceback, ModuleNotFoundError,
+                                           ImportError, SyntaxError, NameError
+PostToolUseFailure + (any)               → ERROR      (tool execution failure)
 
-Stop        + (any)                      → TASK_DONE
-Notification + (any)                     → TASK_START
+PermissionRequest  + (any)               → PERMISSION_PROMPT (precise: only fires on permission dialogs)
+Stop               + (any)               → TASK_DONE
 ──────────────────────────────────────────────────────────────────────────────
 """
 
@@ -45,21 +49,27 @@ def generate_hooks_config(chuuni_bin: str | None = None) -> dict:
         return {"matcher": matcher, "hooks": [hook]}
 
     return {
+        "UserPromptSubmit": [
+            _entry("", _play("thinking")),
+        ],
+        "SessionStart": [
+            _entry("", {"type": "command", "command": f"{bin_path} _session-start"}),
+        ],
         "PreToolUse": [
             _entry("Write|Edit|MultiEdit", _play("coding")),
             _entry("Bash",                 _play("bash_run")),
-            _entry("Task",                 _play("task_start")),
-            _entry("",                     _play("thinking")),   # catch-all
         ],
         "PostToolUse": [
-            _entry("Bash",                 _on_hook("post-bash")),
-            _entry("Write|Edit|MultiEdit", _play("task_done")),
+            _entry("Bash", _on_hook("post-bash")),
+        ],
+        "PostToolUseFailure": [
+            _entry("", _play("error")),
+        ],
+        "PermissionRequest": [
+            _entry("", _play("permission_prompt")),
         ],
         "Stop": [
             _entry("", _play("task_done")),
-        ],
-        "Notification": [
-            _entry("", _play("task_start")),
         ],
     }
 
