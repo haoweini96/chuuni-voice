@@ -1,0 +1,21 @@
+# chuuni-voice character definition
+# Copy this file to ~/.config/chuuni/characters/<your-name>/character.toml
+# and edit to your liking.
+
+[character]
+name         = "sung-jinwoo"
+display_name = "成ジヌ"
+description  = "最弱のハンターから最強の影のモナーク"
+rvc_model    = ""   # optional: filename of your RVC .pth model
+
+[lines]
+# Each event takes a list of lines; one is chosen at random at runtime.
+# Remove any event key to fall back to the built-in chuuni lines.
+task_start = ["一人でいい", "狩りを始めよう", "俺が全部やる"]
+coding     = ["コードを刻む", "世界を書き換える", "俺の意思に従え"]
+bash_run   = ["命令を下す", "起動せよ", "動け"]
+test_pass  = ["問題ない", "当然だ", "俺の力に狂いはない"]
+test_fail  = ["修正が必要だ", "まだ終わりじゃない", "もう一度"]
+error      = ["...チッ", "想定外か", "まだ死ぬつもりはない"]
+task_done  = ["終わった", "予想通りだ", "影の君主に不可能はない"]
+thinking   = ["考えている", "分析中だ", "少し待て"]

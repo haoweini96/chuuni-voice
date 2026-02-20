@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build / distribution
+dist/
+build/
+*.egg-info/
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Backups (created by chuuni hook)
+*.bak
+
+# Environment variables
+.env
+
+# macOS
+.DS_Store
+
+# Audio files in chuuni_voice/assets/ are intentionally tracked (character packs).
+# Do NOT add *.mp3 / *.wav / *.ogg rules here — they would exclude bundled clips.
+
+# Stray audio dropped into the Python source package during testing
+chuuni_voice/characters/*.mp3
+chuuni_voice/characters/*.wav
+chuuni_voice/characters/*.ogg
+chuuni_voice/characters/*.aiff
+chuuni_voice/characters/*.flac
