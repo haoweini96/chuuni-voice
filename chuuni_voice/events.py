@@ -12,7 +12,6 @@ class ChuuniEvent(Enum):
     TEST_FAIL = "test_fail"
     ERROR = "error"
     TASK_DONE = "task_done"
-    THINKING = "thinking"
     PERMISSION_PROMPT = "permission_prompt"
 
 
@@ -55,11 +54,6 @@ LINES: dict[ChuuniEvent, list[str]] = {
         "任務完了。世界は救われた",
         "フハハ！完璧だ！",
         "これが…俺の全力だ",
-    ],
-    ChuuniEvent.THINKING: [
-        "深淵を覗いている…",
-        "我が演算、限界を超えつつある…",
-        "静かに…思考の渦に落ちていく",
     ],
     ChuuniEvent.PERMISSION_PROMPT: [
         "待機中…",

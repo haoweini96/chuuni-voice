@@ -231,7 +231,7 @@ class TestPlayEvent:
         missing = str(tmp_path / "no_such_dir")
 
         with patch("chuuni_voice.player._enqueue_task") as mock_enqueue:
-            play_event(ChuuniEvent.THINKING, missing)  # must not raise
+            play_event(ChuuniEvent.PERMISSION_PROMPT, missing)  # must not raise
 
         mock_enqueue.assert_not_called()
 
@@ -287,8 +287,8 @@ class TestCooldown:
         with patch("chuuni_voice.player._enqueue_task") as mock_enqueue:
             with patch("chuuni_voice.player.time.time", return_value=1000.0):
                 play_event(ChuuniEvent.CODING, str(tmp_path))
-            # 4 s later → past the 3 s default cooldown
-            with patch("chuuni_voice.player.time.time", return_value=1004.0):
+            # 6 s later → past the 5 s default cooldown for coding
+            with patch("chuuni_voice.player.time.time", return_value=1006.0):
                 play_event(ChuuniEvent.CODING, str(tmp_path))
 
         assert mock_enqueue.call_count == 2
@@ -448,8 +448,8 @@ class TestFindCandidates:
         assert result == []
 
     def test_no_duplicates(self, tmp_path):
-        _make_audio(tmp_path, "thinking.mp3")
-        result = _find_candidates(ChuuniEvent.THINKING, tmp_path)
+        _make_audio(tmp_path, "permission_prompt.mp3")
+        result = _find_candidates(ChuuniEvent.PERMISSION_PROMPT, tmp_path)
         assert len(result) == len(set(result))
 
     def test_all_supported_extensions(self, tmp_path):

@@ -25,7 +25,6 @@ import json
 import logging
 import os
 import queue
-import random
 import signal
 import socket
 import subprocess
@@ -56,21 +55,12 @@ class AudioDaemon:
 
     def __init__(
         self,
-        cooldown: float = 3.0,
-        session_limits: dict[str, int] | None = None,
-        repeat_probability: float = 0.5,
+        cooldowns: dict[str, float] | None = None,
+        default_cooldown: float = 5.0,
     ) -> None:
-        self._cooldown = cooldown
-        # Limits loaded at daemon start and fixed for the lifetime of this
-        # session.  0 (or absent) means unlimited.
-        self._session_limits: dict[str, int] = session_limits or {}
-        # Probability [0.0, 1.0] that a repeat play (count > 0) is accepted.
-        # First play (count == 0) is always 100%.
-        self._repeat_probability: float = max(0.0, min(1.0, repeat_probability))
+        self._cooldowns: dict[str, float] = cooldowns or {}
+        self._default_cooldown = default_cooldown
         self._last_played: dict[str, float] = {}
-        # _session_counts is protected by the same lock as _last_played since
-        # both are read/written atomically inside _handle_play.
-        self._session_counts: dict[str, int] = {}
         self._last_lock = threading.Lock()
         self._queue: queue.Queue[tuple[str, float]] = queue.Queue()
         self._running = False
@@ -167,73 +157,33 @@ class AudioDaemon:
         if msg_type == "play":
             return self._handle_play(msg)
         if msg_type == "status":
-            with self._last_lock:
-                counts = dict(self._session_counts)
             return {
                 "ok": True,
                 "queue_size": self._queue.qsize(),
-                "session_counts": counts,
-                "session_limits": self._session_limits,
             }
-        if msg_type == "session_reset":
-            with self._last_lock:
-                self._session_counts.clear()
-            log.info("daemon: session counts reset")
-            return {"ok": True}
         if msg_type == "stop":
             self._running = False
             return {"ok": True}
         return {"ok": False, "reason": f"unknown type: {msg_type!r}"}
 
-    def _roll(self) -> float:
-        """Return a random float in [0.0, 1.0).  Extracted for easy test patching."""
-        return random.random()
-
     def _handle_play(self, msg: dict) -> dict:
-        """Apply session limit, probability, and cooldown checks, then enqueue.
-
-        Check order (per spec):
-          1. Session limit  — hard cap; rejects with reason="session_limit"
-          2. Probability    — first play always passes; repeats use repeat_probability
-          3. Cooldown       — per-event time gate
-          4. Claim + enqueue
-
-        Only step 4 mutates state (last_played / session_counts).
-        Skipped-by-probability and cooldown-rejected plays do NOT consume quota.
-        """
+        """Apply per-event cooldown check, then enqueue."""
         event = str(msg.get("event", ""))
         audio_path = str(msg.get("audio_path", ""))
         volume = float(msg.get("volume", 0.8))
 
+        cooldown = self._cooldowns.get(event, self._default_cooldown)
         now = time.time()
         with self._last_lock:
-            count = self._session_counts.get(event, 0)
-
-            # ── 1. Session limit ─────────────────────────────────────────────
-            limit = self._session_limits.get(event, 0)
-            if limit > 0 and count >= limit:
-                log.debug(
-                    "daemon: session limit reached for %s (%d/%d)", event, count, limit
-                )
-                return {"ok": False, "reason": "session_limit", "count": count, "limit": limit}
-
-            # ── 2. Probability (first play is always 100%) ───────────────────
-            if count > 0 and self._roll() >= self._repeat_probability:
-                log.debug("daemon: probability skip for %s", event)
-                return {"ok": False, "reason": "skipped"}
-
-            # ── 3. Cooldown ──────────────────────────────────────────────────
             last = self._last_played.get(event, 0.0)
-            if now - last < self._cooldown:
-                remaining = self._cooldown - (now - last)
+            if now - last < cooldown:
+                remaining = cooldown - (now - last)
                 log.debug(
                     "daemon: cooldown active for %s (%.1fs remaining)", event, remaining
                 )
                 return {"ok": False, "reason": "cooldown"}
 
-            # ── 4. Claim the slot ────────────────────────────────────────────
             self._last_played[event] = now
-            self._session_counts[event] = count + 1
 
         if audio_path:
             # Drop oldest pending item if queue is full
@@ -309,11 +259,6 @@ def send_status() -> dict | None:
 def send_stop() -> dict | None:
     """Tell the daemon to shut down gracefully."""
     return _send({"type": "stop"})
-
-
-def send_session_reset() -> dict | None:
-    """Tell the daemon to clear all session play counts."""
-    return _send({"type": "session_reset"})
 
 
 def _send(msg: dict, timeout: float = _CLIENT_TIMEOUT) -> dict | None:

@@ -25,6 +25,12 @@ htmlcov/
 # Environment variables
 .env
 
+# Claude Code
+.agents/
+.claude/
+skills/
+skills-lock.json
+
 # macOS
 .DS_Store
 

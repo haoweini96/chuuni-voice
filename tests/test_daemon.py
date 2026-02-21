@@ -16,7 +16,6 @@ from chuuni_voice.daemon import (
     _send,
     is_running,
     send_play,
-    send_session_reset,
     send_status,
     send_stop,
 )
@@ -29,7 +28,7 @@ from chuuni_voice.daemon import (
 
 class TestDispatch:
     def setup_method(self):
-        self.d = AudioDaemon(cooldown=3.0)
+        self.d = AudioDaemon(cooldowns={"coding": 3.0})
         self.d._running = True
 
     def test_unknown_type_returns_error(self):
@@ -41,14 +40,6 @@ class TestDispatch:
         resp = self.d._dispatch({"type": "status"})
         assert resp["ok"] is True
         assert "queue_size" in resp
-        assert "session_counts" in resp
-        assert "session_limits" in resp
-
-    def test_session_reset_clears_counts(self):
-        self.d._session_counts["coding"] = 99
-        resp = self.d._dispatch({"type": "session_reset"})
-        assert resp["ok"] is True
-        assert self.d._session_counts == {}
 
     def test_stop_sets_running_false(self):
         resp = self.d._dispatch({"type": "stop"})
@@ -58,19 +49,20 @@ class TestDispatch:
     def test_play_dispatches_to_handle_play(self, tmp_path):
         audio = tmp_path / "test.mp3"
         audio.write_bytes(b"fake")
-        resp = self.d._dispatch({"type": "play", "event": "coding", "audio_path": str(audio), "volume": 0.8})
+        resp = self.d._dispatch(
+            {"type": "play", "event": "coding", "audio_path": str(audio), "volume": 0.8}
+        )
         assert resp["ok"] is True
 
 
 # ---------------------------------------------------------------------------
-# Unit: AudioDaemon._handle_play (cooldown logic)
+# Unit: AudioDaemon._handle_play (per-event cooldown logic)
 # ---------------------------------------------------------------------------
 
 
 class TestHandlePlay:
     def setup_method(self):
-        # repeat_probability=1.0 so probability never interferes with cooldown tests
-        self.d = AudioDaemon(cooldown=3.0, repeat_probability=1.0)
+        self.d = AudioDaemon(cooldowns={"coding": 3.0, "bash_run": 3.0}, default_cooldown=3.0)
 
     def test_first_play_accepted(self, tmp_path):
         audio = tmp_path / "test.mp3"
@@ -94,7 +86,7 @@ class TestHandlePlay:
         assert resp["ok"] is True
 
     def test_zero_cooldown_allows_rapid_repeat(self, tmp_path):
-        d = AudioDaemon(cooldown=0.0, repeat_probability=1.0)
+        d = AudioDaemon(cooldowns={"coding": 0.0})
         audio = tmp_path / "test.mp3"
         audio.write_bytes(b"fake")
         d._handle_play({"event": "coding", "audio_path": str(audio), "volume": 0.8})
@@ -109,7 +101,7 @@ class TestHandlePlay:
         assert resp2["ok"] is False
 
     def test_cooldown_expires_after_timeout(self, tmp_path):
-        d = AudioDaemon(cooldown=0.05, repeat_probability=1.0)  # 50 ms cooldown
+        d = AudioDaemon(cooldowns={"coding": 0.05})  # 50 ms cooldown
         audio = tmp_path / "test.mp3"
         audio.write_bytes(b"fake")
         d._handle_play({"event": "coding", "audio_path": str(audio), "volume": 0.8})
@@ -127,165 +119,27 @@ class TestHandlePlay:
         self.d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
         assert self.d._queue.empty()
 
-
-# ---------------------------------------------------------------------------
-# Unit: session limits
-# ---------------------------------------------------------------------------
-
-
-class TestSessionLimits:
-    # All constructors use repeat_probability=1.0 so probability never interferes
-    def test_play_accepted_up_to_limit(self):
-        d = AudioDaemon(cooldown=0.0, session_limits={"coding": 2}, repeat_probability=1.0)
+    def test_per_event_cooldown_uses_event_specific_value(self):
+        """Events with different cooldowns should respect their own values."""
+        d = AudioDaemon(cooldowns={"coding": 0.0, "permission_prompt": 60.0})
         d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
+        # coding has 0 cooldown, should allow immediate repeat
         resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert resp["ok"] is True  # second play still within limit
+        assert resp["ok"] is True
 
-    def test_play_rejected_at_limit(self):
-        d = AudioDaemon(cooldown=0.0, session_limits={"coding": 2}, repeat_probability=1.0)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
+        d._handle_play({"event": "permission_prompt", "audio_path": "", "volume": 0.8})
+        # permission_prompt has 60s cooldown, should reject
+        resp = d._handle_play({"event": "permission_prompt", "audio_path": "", "volume": 0.8})
         assert resp["ok"] is False
-        assert resp["reason"] == "session_limit"
-        assert resp["count"] == 2
-        assert resp["limit"] == 2
+        assert resp["reason"] == "cooldown"
 
-    def test_session_limit_does_not_affect_other_events(self):
-        d = AudioDaemon(cooldown=0.0, session_limits={"coding": 1}, repeat_probability=1.0)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        # coding is at limit but bash_run is a different event
-        resp = d._handle_play({"event": "bash_run", "audio_path": "", "volume": 0.8})
-        assert resp["ok"] is True
-
-    def test_zero_limit_means_unlimited(self):
-        d = AudioDaemon(cooldown=0.0, session_limits={"coding": 0}, repeat_probability=1.0)
-        for _ in range(10):
-            resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-            assert resp["ok"] is True
-
-    def test_no_limit_entry_means_unlimited(self):
-        d = AudioDaemon(cooldown=0.0, session_limits={}, repeat_probability=1.0)
-        for _ in range(10):
-            resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-            assert resp["ok"] is True
-
-    def test_session_reset_allows_play_again(self):
-        d = AudioDaemon(cooldown=0.0, session_limits={"coding": 1}, repeat_probability=1.0)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        # at limit
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
+    def test_unknown_event_uses_default_cooldown(self):
+        """Events not in cooldowns dict should use default_cooldown."""
+        d = AudioDaemon(cooldowns={}, default_cooldown=60.0)
+        d._handle_play({"event": "mystery", "audio_path": "", "volume": 0.8})
+        resp = d._handle_play({"event": "mystery", "audio_path": "", "volume": 0.8})
         assert resp["ok"] is False
-
-        d._session_counts.clear()  # simulate session_reset
-
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert resp["ok"] is True
-
-    def test_session_counts_incremented_per_play(self):
-        d = AudioDaemon(cooldown=0.0, session_limits={"coding": 5}, repeat_probability=1.0)
-        for i in range(3):
-            d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert d._session_counts.get("coding") == 3
-
-    def test_cooldown_rejection_does_not_increment_count(self):
-        d = AudioDaemon(cooldown=60.0, session_limits={"coding": 5}, repeat_probability=1.0)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert d._session_counts.get("coding") == 1
-        # Second play within cooldown — should be rejected without touching count
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert d._session_counts.get("coding") == 1
-
-
-# ---------------------------------------------------------------------------
-# Unit: probabilistic play
-# ---------------------------------------------------------------------------
-
-
-class TestProbabilisticPlay:
-    def test_first_play_always_accepted_even_with_zero_probability(self):
-        """count == 0 → 100% play regardless of repeat_probability."""
-        d = AudioDaemon(cooldown=0.0, repeat_probability=0.0)
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert resp["ok"] is True
-
-    def test_repeat_always_skipped_when_probability_zero(self):
-        """repeat_probability=0.0 means every play after the first is dropped."""
-        d = AudioDaemon(cooldown=0.0, repeat_probability=0.0)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # first
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert resp["ok"] is False
-        assert resp["reason"] == "skipped"
-
-    def test_repeat_always_accepted_when_probability_one(self):
-        """repeat_probability=1.0 means every play goes through (just cooldown gating)."""
-        d = AudioDaemon(cooldown=0.0, repeat_probability=1.0)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # first
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert resp["ok"] is True
-
-    def test_roll_below_threshold_plays(self):
-        """_roll() < repeat_probability → play."""
-        d = AudioDaemon(cooldown=0.0, repeat_probability=0.5)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # first
-        d._roll = lambda: 0.49  # just below 0.5 → play
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert resp["ok"] is True
-
-    def test_roll_at_or_above_threshold_skips(self):
-        """_roll() >= repeat_probability → skip."""
-        d = AudioDaemon(cooldown=0.0, repeat_probability=0.5)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # first
-        d._roll = lambda: 0.5  # exactly at threshold → skip
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert resp["ok"] is False
-        assert resp["reason"] == "skipped"
-
-    def test_skip_does_not_increment_session_count(self):
-        """Probability skip must not consume session quota."""
-        d = AudioDaemon(cooldown=0.0, repeat_probability=0.0)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # count → 1
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # skip
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # skip
-        assert d._session_counts.get("coding") == 1  # only the first play counted
-
-    def test_skip_does_not_update_last_played_timestamp(self):
-        """Probability skip must not reset the cooldown timer."""
-        d = AudioDaemon(cooldown=3.0, repeat_probability=0.0)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # first
-        ts_before = d._last_played["coding"]
-        time.sleep(0.01)
-        # second attempt: count=1, prob=0.0 → skip BEFORE cooldown check
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert d._last_played["coding"] == ts_before  # timestamp unchanged
-
-    def test_session_reset_makes_next_play_first_play(self):
-        """After session reset, count is 0 again → next play is always 100%."""
-        d = AudioDaemon(cooldown=0.0, repeat_probability=0.0)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # first
-        # Now at limit; second would be skipped
-        assert d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})["ok"] is False
-
-        d._session_counts.clear()  # simulate session_reset
-
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        assert resp["ok"] is True  # first play again after reset
-
-    def test_probability_check_precedes_cooldown(self):
-        """When within cooldown AND probability would skip, reason is 'skipped' not 'cooldown'."""
-        d = AudioDaemon(cooldown=60.0, repeat_probability=0.0)
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # first, sets cooldown
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        # Probability check fires first → skipped, not cooldown
-        assert resp["reason"] == "skipped"
-
-    def test_session_limit_check_precedes_probability(self):
-        """When at session limit, reason is 'session_limit' even if probability would play."""
-        d = AudioDaemon(cooldown=0.0, repeat_probability=1.0, session_limits={"coding": 1})
-        d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})  # count → 1
-        resp = d._handle_play({"event": "coding", "audio_path": "", "volume": 0.8})
-        # Session limit fires first → session_limit, not a probability decision
-        assert resp["reason"] == "session_limit"
+        assert resp["reason"] == "cooldown"
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +190,7 @@ def live_daemon(tmp_path, monkeypatch):
     # Stub out actual audio playback so tests don't call afplay
     monkeypatch.setattr(daemon_mod, "_play_audio", lambda path, volume: None)
 
-    d = AudioDaemon(cooldown=0.05, repeat_probability=1.0)  # short cooldown; no probability filtering
+    d = AudioDaemon(cooldowns={"coding": 0.05, "bash_run": 0.05, "task_done": 0.05})
     t = threading.Thread(target=d.run, daemon=True)
     t.start()
 
@@ -399,50 +253,6 @@ class TestDaemonIntegration:
         sock.close()
         resp = json.loads(data.decode().strip())
         assert resp["ok"] is False
-
-    def test_status_includes_session_counts_and_limits(self, live_daemon):
-        resp = send_status()
-        assert resp is not None
-        assert "session_counts" in resp
-        assert "session_limits" in resp
-
-    def test_session_reset_clears_counts_via_socket(self, live_daemon, tmp_path):
-        audio = tmp_path / "fake.mp3"
-        audio.write_bytes(b"fake audio")
-        send_play("coding", str(audio), 0.5)
-        # Counts should have coding=1 now
-        before = send_status()
-        assert before["session_counts"].get("coding", 0) == 1
-
-        resp = send_session_reset()
-        assert resp is not None
-        assert resp["ok"] is True
-
-        after = send_status()
-        assert after["session_counts"].get("coding", 0) == 0
-
-    def test_session_limit_enforced_via_daemon(self, live_daemon, tmp_path, monkeypatch):
-        # Patch the daemon's limits so coding limit = 2
-        live_daemon._session_limits["coding"] = 2
-        audio = tmp_path / "fake.mp3"
-        audio.write_bytes(b"fake audio")
-
-        r1 = send_play("coding", str(audio), 0.5)
-        assert r1 is not None and r1["ok"] is True
-
-        time.sleep(0.1)  # wait for cooldown to expire (cooldown=0.05 in fixture)
-
-        r2 = send_play("coding", str(audio), 0.5)
-        assert r2 is not None and r2["ok"] is True
-
-        time.sleep(0.1)
-
-        r3 = send_play("coding", str(audio), 0.5)
-        assert r3 is not None
-        assert r3["ok"] is False
-        assert r3["reason"] == "session_limit"
-        assert r3["count"] == 2
-        assert r3["limit"] == 2
 
     def test_stop_shuts_down_daemon(self, live_daemon):
         resp = send_stop()

@@ -20,43 +20,33 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "rvc_index_path": "",
     "volume": 0.8,
     "enabled": True,
-    "cooldown_seconds": 3.0,
+    "cooldown_seconds": 5.0,
 }
 
-# Default per-event session play limits (0 = unlimited).
-DEFAULT_SESSION_LIMITS: dict[str, int] = {
-    "coding": 3,
-    "bash_run": 3,
-    "thinking": 1,        # fires once at message-send via Notification hook
-    "permission_prompt": 2,
-    "task_start": 5,
-    "task_done": 1,       # fires once at conversation end via Stop hook
+# Default per-event cooldown times in seconds.
+DEFAULT_COOLDOWNS: dict[str, float] = {
+    "task_start": 0,
+    "task_done": 0,
+    "coding": 30,
+    "bash_run": 30,
     "test_pass": 5,
     "test_fail": 5,
     "error": 5,
+    "permission_prompt": 5,
 }
 
 
-def get_repeat_probability(cfg: dict[str, Any]) -> float:
-    """Return the repeat-play probability from the ``[playback]`` table.
+def get_cooldowns(cfg: dict[str, Any]) -> dict[str, float]:
+    """Return per-event cooldown times, merging config with defaults.
 
-    First play of an event is always 100%.  Subsequent plays use this value.
-    Range [0.0, 1.0]:  0.0 = always skip repeats,  1.0 = always play repeats.
-    """
-    return float(cfg.get("playback", {}).get("repeat_probability", 0.5))
-
-
-def get_session_limits(cfg: dict[str, Any]) -> dict[str, int]:
-    """Return per-event session play limits, merging config with defaults.
-
-    Reads the ``[session_limits]`` table from *cfg*.  Keys present in config
+    Reads the ``[cooldown]`` table from *cfg*.  Keys present in config
     override the defaults; unrecognised keys are passed through as-is so
-    custom character events can also be limited.
+    custom character events can also have cooldowns.
     """
-    on_disk = cfg.get("session_limits", {})
-    merged = dict(DEFAULT_SESSION_LIMITS)
+    on_disk = cfg.get("cooldown", {})
+    merged = dict(DEFAULT_COOLDOWNS)
     merged.update(
-        {k: int(v) for k, v in on_disk.items() if isinstance(v, (int, float))}
+        {k: float(v) for k, v in on_disk.items() if isinstance(v, (int, float))}
     )
     return merged
 

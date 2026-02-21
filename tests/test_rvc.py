@@ -258,11 +258,11 @@ class TestConvertForPlayback:
         """convert() returns True but didn't actually create the file → fallback."""
         source_dir = tmp_path / "source"
         source_dir.mkdir()
-        audio = _make_audio(source_dir, "thinking.wav")
+        audio = _make_audio(source_dir, "error.wav")
 
         client = self._make_client(convert_ok=True)  # returns True but no file
 
-        result = convert_for_playback(ChuuniEvent.THINKING, str(tmp_path), client, "m")
+        result = convert_for_playback(ChuuniEvent.ERROR, str(tmp_path), client, "m")
 
         assert result == str(audio)
 

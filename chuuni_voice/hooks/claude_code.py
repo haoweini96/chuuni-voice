@@ -2,8 +2,7 @@
 
 Hook → ChuuniEvent mapping
 ──────────────────────────────────────────────────────────────────────────────
-UserPromptSubmit + (any)                 → THINKING   (fires the instant the user sends a message)
-SessionStart     + (any)                 → TASK_START (fires when a session begins or resumes)
+UserPromptSubmit + (any)                 → TASK_START (fires when the user sends a message)
 
 PreToolUse  + Write | Edit | MultiEdit   → CODING
 PreToolUse  + Bash                       → BASH_RUN
@@ -50,10 +49,7 @@ def generate_hooks_config(chuuni_bin: str | None = None) -> dict:
 
     return {
         "UserPromptSubmit": [
-            _entry("", _play("thinking")),
-        ],
-        "SessionStart": [
-            _entry("", {"type": "command", "command": f"{bin_path} _session-start"}),
+            _entry("", _play("task_start")),
         ],
         "PreToolUse": [
             _entry("Write|Edit|MultiEdit", _play("coding")),

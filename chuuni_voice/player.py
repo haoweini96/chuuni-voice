@@ -166,8 +166,8 @@ def play_event(
 ) -> None:
     """Find and play an audio clip for *event* via the serial playback queue.
 
-    Cooldown check (per-event, default 3 s from config):
-      If the same event was played within the cooldown window, the call is
+    Cooldown check (per-event from config):
+      If the same event was played within its cooldown window, the call is
       silently dropped.  Cooldown state is shared across processes via a
       file lock at ~/.config/chuuni/cooldown.json.
 
@@ -181,9 +181,10 @@ def play_event(
     Silent failure on missing directory, missing files, or playback errors.
     """
     try:
-        from chuuni_voice.config import load_config, get_character_dir
+        from chuuni_voice.config import get_cooldowns, load_config, get_character_dir
         cfg = load_config()
-        cooldown = float(cfg.get("cooldown_seconds", 3.0))
+        cooldowns = get_cooldowns(cfg)
+        cooldown = cooldowns.get(event.value, float(cfg.get("cooldown_seconds", 5.0)))
 
         if not _check_and_claim_cooldown(event.value, cooldown):
             return

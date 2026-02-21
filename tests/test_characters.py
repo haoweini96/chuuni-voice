@@ -34,7 +34,6 @@ test_pass  = ["問題ない", "当然だ"]
 test_fail  = ["修正が必要だ", "まだ終わりじゃない"]
 error      = ["...チッ", "想定外か"]
 task_done  = ["終わった", "予想通りだ"]
-thinking   = ["考えている", "分析中だ"]
 """
 
 
@@ -162,13 +161,13 @@ class TestLoadFromDirWithToml:
     def test_reads_all_event_lines(self, tmp_path):
         _write_toml(tmp_path, FULL_TOML)
         char = CharacterManager.load_from_dir(str(tmp_path))
-        assert len(char.lines) == 8
+        assert len(char.lines) == 7
 
     def test_correct_line_values(self, tmp_path):
         _write_toml(tmp_path, FULL_TOML)
         char = CharacterManager.load_from_dir(str(tmp_path))
         assert char.lines["task_start"] == ["一人でいい", "狩りを始めよう"]
-        assert char.lines["thinking"] == ["考えている", "分析中だ"]
+        assert char.lines["task_done"] == ["終わった", "予想通りだ"]
 
     def test_fallback_name_from_dir_when_key_missing(self, tmp_path):
         toml = """\

@@ -165,13 +165,15 @@ def play(event: str) -> None:
     \b
     Events:
       task_start  coding  bash_run  test_pass  test_fail
-      error  task_done  thinking
+      error  task_done  permission_prompt
 
     Prints the Japanese line even when no audio file is found.
     """
     from chuuni_voice.config import load_config, get_character_dir
     from chuuni_voice.player import _check_and_claim_cooldown, _play_blocking
     from chuuni_voice import daemon as _daemon
+
+    _debug_log(f"play called: event={event}")
 
     cfg = load_config()
 
@@ -194,9 +196,12 @@ def play(event: str) -> None:
     volume = float(cfg.get("volume", 0.8))
     audio_path = _resolve_audio(char_dir, chuuni_event.value)
 
+    _debug_log(f"  enabled={cfg.get('enabled')}, audio_path={audio_path}, volume={volume}")
+
     # ── Daemon path ──────────────────────────────────────────────────────────
     # Auto-start the daemon if it isn't running yet.
-    _ensure_daemon_running()
+    daemon_up = _ensure_daemon_running()
+    _debug_log(f"  daemon_up={daemon_up}")
     # send_play() returns None only when the daemon is not running (connection
     # error / no socket).  A cooldown rejection returns {"ok": false} — still
     # a valid response, so we exit here in both the accepted and rejected cases.
@@ -205,18 +210,19 @@ def play(event: str) -> None:
         str(audio_path) if audio_path else "",
         volume,
     )
+    _debug_log(f"  daemon resp={resp}")
     if resp is not None:
         if resp.get("ok"):
             click.echo(f"[{chuuni_event.value}]  {_character_line(chuuni_event, str(char_dir))}")
-        elif resp.get("reason") == "session_limit":
-            count = resp.get("count", 0)
-            limit = resp.get("limit", 0)
-            click.echo(f"[chuuni] {chuuni_event.value}: session limit reached ({count}/{limit})")
-        return  # daemon handled it (or cooldown/limit dropped it)
+        return  # daemon handled it (or cooldown dropped it)
 
     # ── Fallback: direct playback with file-based cooldown ───────────────────
-    cooldown = float(cfg.get("cooldown_seconds", 3.0))
+    _debug_log("  daemon unreachable, using fallback")
+    from chuuni_voice.config import get_cooldowns
+    cooldowns = get_cooldowns(cfg)
+    cooldown = cooldowns.get(chuuni_event.value, float(cfg.get("cooldown_seconds", 5.0)))
     if not _check_and_claim_cooldown(chuuni_event.value, cooldown):
+        _debug_log(f"  fallback cooldown blocked (cd={cooldown}s)")
         return  # silently skip — within cooldown window
 
     line = _character_line(chuuni_event, str(char_dir))
@@ -274,14 +280,12 @@ def on_hook(hook_ctx: str) -> None:
     if resp is not None:
         if resp.get("ok"):
             click.echo(f"[{event.value}]  {_character_line(event, str(char_dir))}")
-        elif resp.get("reason") == "session_limit":
-            count = resp.get("count", 0)
-            limit = resp.get("limit", 0)
-            click.echo(f"[chuuni] {event.value}: session limit reached ({count}/{limit})")
         return  # daemon handled it
 
     # ── Fallback: file-based cooldown + direct playback ──────────────────────
-    cooldown = float(cfg.get("cooldown_seconds", 3.0))
+    from chuuni_voice.config import get_cooldowns
+    cooldowns = get_cooldowns(cfg)
+    cooldown = cooldowns.get(event.value, float(cfg.get("cooldown_seconds", 5.0)))
     if not _check_and_claim_cooldown(event.value, cooldown):
         return
 
@@ -415,7 +419,7 @@ def daemon_stop() -> None:
     # The daemon sets _running=False immediately but takes up to 1 s to close
     # the server socket due to the accept() timeout.  Without this wait,
     # a back-to-back "daemon stop && daemon start" would see is_running()=True
-    # and refuse to start, leaving stale session counts in the old daemon.
+    # and refuse to start.
     deadline = time.time() + 3.0
     while time.time() < deadline:
         if not _daemon.is_running():
@@ -442,35 +446,6 @@ def daemon_status() -> None:
         click.echo("daemon: socket exists but not responding", err=True)
 
 
-# ---------------------------------------------------------------------------
-# chuuni session
-# ---------------------------------------------------------------------------
-
-
-@main.group()
-def session() -> None:
-    """Manage session play counts."""
-
-
-@session.command("reset")
-def session_reset() -> None:
-    """Reset per-event play counts so all events can play again.
-
-    Equivalent to restarting the daemon but without interrupting playback.
-    """
-    from chuuni_voice import daemon as _daemon
-
-    if not _daemon.is_running():
-        click.echo("daemon: not running — session resets automatically on daemon restart")
-        return
-
-    resp = _daemon.send_session_reset()
-    if resp and resp.get("ok"):
-        click.echo("session: counts cleared")
-    else:
-        click.echo("session: failed to reset", err=True)
-
-
 @main.command("_daemon-run", hidden=True)
 def daemon_run() -> None:
     """Internal: run the audio daemon in the foreground (called by 'daemon start')."""
@@ -485,38 +460,11 @@ def daemon_run() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    from chuuni_voice.config import get_session_limits, get_repeat_probability
+    from chuuni_voice.config import get_cooldowns
     cfg = load_config()
-    cooldown = float(cfg.get("cooldown_seconds", 3.0))
-    limits = get_session_limits(cfg)
-    prob = get_repeat_probability(cfg)
-    _daemon.AudioDaemon(cooldown=cooldown, session_limits=limits, repeat_probability=prob).run()
-
-
-@main.command("_session-start", hidden=True)
-def session_start_hook() -> None:
-    """Internal: reset session counts and play task_start (called by SessionStart hook)."""
-    from chuuni_voice.config import load_config, get_character_dir
-    from chuuni_voice import daemon as _daemon
-
-    cfg = load_config()
-    if not cfg.get("enabled", True):
-        return
-
-    _ensure_daemon_running()
-    _daemon.send_session_reset()
-
-    char_dir = get_character_dir(cfg)
-    volume = float(cfg.get("volume", 0.8))
-    audio_path = _resolve_audio(char_dir, ChuuniEvent.TASK_START.value)
-
-    resp = _daemon.send_play(
-        ChuuniEvent.TASK_START.value,
-        str(audio_path) if audio_path else "",
-        volume,
-    )
-    if resp is not None and resp.get("ok"):
-        click.echo(f"[task_start]  {_character_line(ChuuniEvent.TASK_START, str(char_dir))}")
+    cooldowns = get_cooldowns(cfg)
+    default_cooldown = float(cfg.get("cooldown_seconds", 5.0))
+    _daemon.AudioDaemon(cooldowns=cooldowns, default_cooldown=default_cooldown).run()
 
 
 # ---------------------------------------------------------------------------
@@ -597,38 +545,47 @@ def status() -> None:
         loc = found or click.style("not found in PATH", fg="red")
         click.echo(f"  {sym}  {b:<10}  {loc}")
 
-    # ── Session ──────────────────────────────────────────────────────────────
+    # ── Daemon ──────────────────────────────────────────────────────────────
     click.echo()
-    click.echo("── Session ─────────────────────────────────────────────")
+    click.echo("── Daemon ──────────────────────────────────────────────")
     from chuuni_voice import daemon as _daemon
 
     if not _daemon.is_running():
-        click.echo("  daemon: not running — session counts unavailable")
+        click.echo("  not running")
     else:
         resp = _daemon.send_status()
         if resp:
-            counts: dict = resp.get("session_counts", {})
-            limits: dict = resp.get("session_limits", {})
-            all_events = sorted(set(list(counts.keys()) + list(limits.keys())))
-            if all_events:
-                click.echo(f"  {'Event':<18}  {'Played':>6}  {'Limit':>5}")
-                click.echo(f"  {'-'*18}  {'------':>6}  {'-----':>5}")
-                for ev in all_events:
-                    c = counts.get(ev, 0)
-                    lim = limits.get(ev, 0)
-                    lim_str = str(lim) if lim > 0 else "∞"
-                    at_limit = lim > 0 and c >= lim
-                    count_str = click.style(str(c), fg="red", bold=True) if at_limit else str(c)
-                    click.echo(f"  {ev:<18}  {count_str:>6}  {lim_str:>5}")
-            else:
-                click.echo("  No events played this session yet")
+            q = resp.get("queue_size", 0)
+            click.echo(f"  running  (queue_size={q})")
         else:
-            click.echo("  daemon: not responding")
+            click.echo("  socket exists but not responding")
+
+    # ── Cooldowns ──────────────────────────────────────────────────────────
+    click.echo()
+    click.echo("── Cooldowns ───────────────────────────────────────────")
+    from chuuni_voice.config import get_cooldowns
+    cooldowns = get_cooldowns(cfg)
+    for ev in ChuuniEvent:
+        cd = cooldowns.get(ev.value, float(cfg.get("cooldown_seconds", 5.0)))
+        click.echo(f"  {ev.value:<20}  {cd:>5.0f}s")
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+_DEBUG_LOG = Path.home() / ".config" / "chuuni" / "debug.log"
+
+
+def _debug_log(msg: str) -> None:
+    """Append a timestamped line to ~/.config/chuuni/debug.log."""
+    try:
+        from datetime import datetime
+        _DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _DEBUG_LOG.open("a") as f:
+            f.write(f"{datetime.now().isoformat()} {msg}\n")
+    except Exception:
+        pass
 
 
 def _ensure_daemon_running() -> bool:
