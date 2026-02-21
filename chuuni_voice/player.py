@@ -292,63 +292,26 @@ def _linux_command(path: Path, volume: float) -> list[str] | None:
 
 
 def _find_candidates(event: ChuuniEvent, character_dir: Path) -> list[Path]:
-    """Return all audio files in *character_dir* that match *event*.
+    """Return all audio files in *character_dir* whose name ends with ``_<event>.<ext>``.
 
-    Search order (highest priority first — first non-empty tier wins):
+    For example, event ``task_start`` matches any of::
 
-      1. ``日语_<charname>_<event>.<ext>``
-         e.g. ``日语_genki-girl_coding.mp3``
+        japanese_catch-pokemon_most-iconic_task_start.mp3
+        日语_genki-girl_task_start.wav
+        custom_task_start.mp3
 
-      2. ``japanese_*<charname>_<event>.<ext>``
-         e.g. ``japanese_Amazing-anime-girl-character_genki-girl_task_done.mp3``
-         The wildcard absorbs any description text before <charname>, so both
-         ``_<charname>_`` and ``-<charname>_`` separators are matched.
-         Multiple files for the same event are all returned (random choice upstream).
-
-      3. Generic: ``<event>.<ext>``  and  ``<event>_*.<ext>``
-         e.g. ``coding.mp3``, ``coding_1.mp3``
-
-    Within each tier, extension priority follows ``_AUDIO_EXTS`` order.
+    Also matches the bare ``<event>.<ext>`` form (e.g. ``task_start.mp3``).
     """
     if not character_dir.is_dir():
         return []
 
-    stem = event.value              # e.g. "task_done"
-    char_name = character_dir.name  # e.g. "genki-girl"
-    seen: set[Path] = set()
-
-    # ── Priority 1: 日语_<char>_<event>.<ext> ─────────────────────────────
-    p1: list[Path] = []
+    stem = event.value  # e.g. "task_start"
+    candidates: list[Path] = []
     for ext in _AUDIO_EXTS:
-        candidate = character_dir / f"日语_{char_name}_{stem}{ext}"
-        if candidate.exists() and candidate not in seen:
-            p1.append(candidate)
-            seen.add(candidate)
-    if p1:
-        return p1
-
-    # ── Priority 2: japanese_*<char>_<event>.<ext> ────────────────────────
-    # Glob without an explicit separator before <char_name> so that both
-    # "..._genki-girl_" and "...-genki-girl_" variants are matched.
-    p2: list[Path] = []
-    for ext in _AUDIO_EXTS:
-        for f in sorted(character_dir.glob(f"japanese_*{char_name}_{stem}{ext}")):
-            if f not in seen:
-                p2.append(f)
-                seen.add(f)
-    if p2:
-        return p2
-
-    # ── Priority 3: generic <event>.<ext> and <event>_*.<ext> ─────────────
-    p3: list[Path] = []
-    for ext in _AUDIO_EXTS:
+        # Files ending with _<event>.<ext>
+        candidates.extend(sorted(character_dir.glob(f"*_{stem}{ext}")))
+        # Bare <event>.<ext>
         exact = character_dir / f"{stem}{ext}"
-        if exact.exists() and exact not in seen:
-            p3.append(exact)
-            seen.add(exact)
-        for f in sorted(character_dir.glob(f"{stem}_*{ext}")):
-            if f not in seen:
-                p3.append(f)
-                seen.add(f)
-
-    return p3
+        if exact.exists() and exact not in candidates:
+            candidates.append(exact)
+    return candidates

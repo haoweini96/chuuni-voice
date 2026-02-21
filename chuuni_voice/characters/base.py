@@ -3,16 +3,8 @@
 Each character lives in its own directory::
 
     ~/.config/chuuni/characters/<name>/
-        character.toml
-        coding.mp3
-        bash_run.mp3
-        task_start.mp3
-        task_done.mp3
-        test_pass.mp3
-        test_fail.mp3
-        error.mp3
-        thinking.mp3
-        permission_prompt.mp3
+        character.toml          (optional metadata)
+        japanese_*_<name>_<event>.mp3   (audio clips)
 
 character.toml format::
 
@@ -22,15 +14,12 @@ character.toml format::
     description  = "最弱のハンターから最強の影のモナーク"
     rvc_model    = ""
 
-    [lines]
-    task_start = ["一人でいい", "狩りを始めよう", "俺が全部やる"]
-    task_done  = ["終わった", "予想通りだ", "影の君主に不可能はない"]
-    ...
+Audio files are the sole data source for playback.  Any file whose name
+ends with ``_<event_name>.mp3`` (or ``.wav``) is a candidate for that event.
 """
 
-import random
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +27,6 @@ if sys.version_info >= (3, 11):
     import tomllib
 else:
     import tomli as tomllib  # type: ignore[no-redef]
-
-from chuuni_voice.events import ChuuniEvent, get_line as _default_line
 
 
 # ---------------------------------------------------------------------------
@@ -56,18 +43,6 @@ class Character:
     description: str
     audio_dir: str
     rvc_model: str = ""
-    lines: dict[str, list[str]] = field(default_factory=dict)
-
-    def get_line(self, event: ChuuniEvent) -> str:
-        """Return a voice line for *event*.
-
-        Uses this character's custom lines when available; falls back to the
-        default lines in ``events.py`` otherwise.
-        """
-        custom = self.lines.get(event.value)
-        if custom:
-            return random.choice(custom)
-        return _default_line(event)
 
     def __repr__(self) -> str:
         return f"Character(name={self.name!r}, display_name={self.display_name!r})"
@@ -104,7 +79,6 @@ class CharacterManager:
             data: dict[str, Any] = tomllib.load(f)
 
         meta = data.get("character", {})
-        raw_lines: dict[str, Any] = data.get("lines", {})
 
         return Character(
             name=meta.get("name", char_path.name),
@@ -112,11 +86,6 @@ class CharacterManager:
             description=meta.get("description", ""),
             audio_dir=str(char_path),
             rvc_model=meta.get("rvc_model", ""),
-            lines={
-                k: v
-                for k, v in raw_lines.items()
-                if isinstance(v, list) and all(isinstance(s, str) for s in v)
-            },
         )
 
     @staticmethod
@@ -151,14 +120,4 @@ name         = "{name}"
 display_name = "{display_name}"
 description  = ""
 rvc_model    = ""
-
-[lines]
-task_start         = ["参る！", "いくぞ、全力で！", "我が力、解放する時が来た…"]
-coding             = ["コードよ…俺の意志に従え！", "この指先から、世界を書き換える", "フハハ！創造の時だ！"]
-bash_run           = ["シェルよ、我が命令を刻め！", "全システム、起動せよ！", "いくぞ…！覚悟しろ！"]
-test_pass          = ["完璧だ…！全てが意図通りに…！", "フハハ！テストは俺の前に跪いた！", "この力…本物だった"]
-test_fail          = ["くっ…テストに阻まれるとは…", "バグよ…お前の存在を許さぬ！", "まだだ…まだ終わらぬ！"]
-error              = ["くっ…予想外の敵か", "ぐっ…バグという名の刺客…", "この痛み…乗り越えてみせる！"]
-task_done          = ["任務完了。世界は救われた", "フハハ！完璧だ！", "これが…俺の全力だ"]
-permission_prompt  = ["待機中…", "指示を待っている…", "我が主よ、命令を…"]
 """

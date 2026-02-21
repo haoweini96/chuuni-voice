@@ -506,8 +506,6 @@ def status() -> None:
             click.echo(f"  Display     {char.display_name}")
         if char.description:
             click.echo(f"  Desc        {char.description}")
-        has_custom = len(char.lines)
-        click.echo(f"  Custom lines  {has_custom}/{len(ChuuniEvent)} events overridden")
     except Exception:
         pass
 
@@ -632,41 +630,24 @@ def _chuuni_bin() -> str:
 
 
 def _resolve_audio(character_dir: Path, stem: str) -> Path | None:
-    """Return the best audio file for *stem* in *character_dir*.
+    """Return a random audio file for *stem* in *character_dir*.
 
-    Priority mirrors player._find_candidates:
-      1. 日语_<charname>_<stem>.<ext>
-      2. japanese_*<charname>_<stem>.<ext>  (first match, alphabetical)
-      3. <stem>.<ext>
+    Matches any file ending with ``_<stem>.<ext>`` or the bare ``<stem>.<ext>``.
     """
-    import glob as _glob
-    char_name = character_dir.name
-    # Priority 1: 日语 named format
+    import random as _random
+
+    candidates: list[Path] = []
     for ext in AUDIO_EXTENSIONS:
-        candidate = character_dir / f"日语_{char_name}_{stem}{ext}"
-        if candidate.exists():
-            return candidate
-    # Priority 2: japanese_* format
-    for ext in AUDIO_EXTENSIONS:
-        matches = sorted(character_dir.glob(f"japanese_*{char_name}_{stem}{ext}"))
-        if matches:
-            return matches[0]
-    # Priority 3: generic format
-    for ext in AUDIO_EXTENSIONS:
-        candidate = character_dir / f"{stem}{ext}"
-        if candidate.exists():
-            return candidate
-    return None
+        candidates.extend(sorted(character_dir.glob(f"*_{stem}{ext}")))
+        exact = character_dir / f"{stem}{ext}"
+        if exact.exists() and exact not in candidates:
+            candidates.append(exact)
+    return _random.choice(candidates) if candidates else None
 
 
 def _character_line(event: ChuuniEvent, char_dir: str) -> str:
-    """Return a line for *event*, using character custom lines when available."""
-    try:
-        from chuuni_voice.characters.base import CharacterManager
-        char = CharacterManager.load_from_dir(char_dir)
-        return char.get_line(event)
-    except Exception:
-        return get_line(event)
+    """Return a default voice line for *event*."""
+    return get_line(event)
 
 
 # Keywords that indicate a Python runtime crash (not a test assertion failure).

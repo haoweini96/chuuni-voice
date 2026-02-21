@@ -184,9 +184,9 @@ class TestPlayEvent:
     def test_random_choice_among_variants(self, tmp_path):
         """When several files match, all of them must be in the candidate pool."""
         files = [
-            _make_audio(tmp_path, "task_done.mp3"),
-            _make_audio(tmp_path, "task_done_1.mp3"),
-            _make_audio(tmp_path, "task_done_2.mp3"),
+            _make_audio(tmp_path, "japanese_a_char_task_done.mp3"),
+            _make_audio(tmp_path, "japanese_b_char_task_done.mp3"),
+            _make_audio(tmp_path, "japanese_c_char_task_done.mp3"),
         ]
 
         chosen_paths: set[str] = set()
@@ -199,21 +199,21 @@ class TestPlayEvent:
             chosen_paths.add(mock_enqueue.call_args[0][0])
 
         assert {Path(p).name for p in chosen_paths} == {
-            "task_done.mp3",
-            "task_done_1.mp3",
-            "task_done_2.mp3",
+            "japanese_a_char_task_done.mp3",
+            "japanese_b_char_task_done.mp3",
+            "japanese_c_char_task_done.mp3",
         }
 
     def test_random_choice_is_uniform(self, tmp_path):
         """random.choice should receive the full candidate list."""
-        _make_audio(tmp_path, "error.mp3")
-        _make_audio(tmp_path, "error_alt.wav")
+        _make_audio(tmp_path, "japanese_a_char_error.mp3")
+        _make_audio(tmp_path, "japanese_b_char_error.wav")
 
         with (
             patch("chuuni_voice.player._enqueue_task"),
             patch("chuuni_voice.player.random") as mock_random,
         ):
-            mock_random.choice.return_value = Path(tmp_path / "error.mp3")
+            mock_random.choice.return_value = Path(tmp_path / "japanese_a_char_error.mp3")
             play_event(ChuuniEvent.ERROR, str(tmp_path))
 
         candidates_passed = mock_random.choice.call_args[0][0]
@@ -287,8 +287,8 @@ class TestCooldown:
         with patch("chuuni_voice.player._enqueue_task") as mock_enqueue:
             with patch("chuuni_voice.player.time.time", return_value=1000.0):
                 play_event(ChuuniEvent.CODING, str(tmp_path))
-            # 6 s later → past the 5 s default cooldown for coding
-            with patch("chuuni_voice.player.time.time", return_value=1006.0):
+            # 31 s later → past the 30 s default cooldown for coding
+            with patch("chuuni_voice.player.time.time", return_value=1031.0):
                 play_event(ChuuniEvent.CODING, str(tmp_path))
 
         assert mock_enqueue.call_count == 2
@@ -418,13 +418,13 @@ class TestFindCandidates:
         result = _find_candidates(ChuuniEvent.CODING, tmp_path)
         assert [f.name for f in result] == ["coding.mp3"]
 
-    def test_numbered_variants(self, tmp_path):
+    def test_multiple_files_with_suffix(self, tmp_path):
         _make_audio(tmp_path, "task_done.mp3")
-        _make_audio(tmp_path, "task_done_1.mp3")
-        _make_audio(tmp_path, "task_done_2.wav")
+        _make_audio(tmp_path, "japanese_a_char_task_done.mp3")
+        _make_audio(tmp_path, "japanese_b_char_task_done.wav")
         result = _find_candidates(ChuuniEvent.TASK_DONE, tmp_path)
         names = {f.name for f in result}
-        assert names == {"task_done.mp3", "task_done_1.mp3", "task_done_2.wav"}
+        assert names == {"task_done.mp3", "japanese_a_char_task_done.mp3", "japanese_b_char_task_done.wav"}
 
     def test_extension_priority_order(self, tmp_path):
         """mp3 should appear before wav in results."""
